@@ -1,0 +1,197 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, KFold
+
+np.random.seed(0)
+n = 50
+distance = np.random.uniform(5, 40, n)        # meters
+load = np.random.uniform(10, 100, n)           # kg
+congestion = np.random.randint(0, 5, n)        # number of nearby robots
+# True relationship (unknown to the model)
+time = 1.8 * distance + 0.3 * load + 5.0 * congestion + 10 + np.random.normal(0, 5, n)
+X = np.column_stack([distance, load, congestion])
+y = time
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+print(f"Training set: {len(X_train)} examples")
+print(f"Test set:     {len(X_test)} examples")
+
+def gradient_descent(X, y, alpha=0.1, n_iter=1000, lam=0.0):
+    """Gradient descent for linear regression with optional L2 regularization."""
+    # Normalize features (zero mean, unit variance)
+    X_mean, X_std = X.mean(axis=0), X.std(axis=0)
+    X_norm = (X - X_mean) / X_std
+    N, d = X_norm.shape
+    w = np.zeros(d)
+    b = 0.0
+    losses = []
+    for _ in range(n_iter):
+        # Predictions and residuals
+        y_hat = X_norm @ w + b
+        residuals = y - y_hat
+        # MSE loss (with optional L2 penalty on weights)
+        loss = np.mean(residuals**2) + lam * np.sum(w**2)
+        losses.append(loss)
+        # Gradients (from Equations 5.3.8 and 5.3.9)
+        grad_w = -2 / N * (X_norm.T @ residuals) + 2 * lam * w
+        grad_b = -2 / N * np.sum(residuals)
+        # Update parameters
+        w -= alpha * grad_w
+        b -= alpha * grad_b
+    return w, b, losses, X_mean, X_std
+def predict(X_new, w, b, X_mean, X_std):
+    """Predict using learned parameters (handles normalization)."""
+    X_norm = (X_new - X_mean) / X_std
+    return X_norm @ w + b
+def cv_mse(X, y, alpha=0.1, n_iter=1000, lam=0.0, k=5):
+    """k-fold cross-validation MSE for gradient descent."""
+    kf = KFold(n_splits=k, shuffle=True, random_state=42)
+    fold_mses = []
+    for train_idx, val_idx in kf.split(X):
+        w_cv, b_cv, _, Xm, Xs = gradient_descent(
+            X[train_idx], y[train_idx], alpha=alpha, n_iter=n_iter, lam=lam
+        )
+        y_pred = predict(X[val_idx], w_cv, b_cv, Xm, Xs)
+        fold_mses.append(np.mean((y[val_idx] - y_pred) ** 2))
+    return np.mean(fold_mses), np.std(fold_mses)
+# Run with default settings on the training set
+w, b, losses, X_mean, X_std = gradient_descent(
+    X_train, y_train, alpha=0.1, n_iter=1000
+)
+cv_mean, cv_std = cv_mse(X_train, y_train, alpha=0.1, n_iter=1000)
+print(f"Final training MSE: {losses[-1]:.2f}")
+print(f"5-fold CV MSE:      {cv_mean:.2f} ± {cv_std:.2f}")
+print(f"Weights (normalized): [{w[0]:.3f}, {w[1]:.3f}, {w[2]:.3f}]")
+print(f"Bias: {b:.2f}")
+
+alphas = [0.001, 0.01, 0.1, 0.5]
+
+lambdas = [0, 0.01, 0.1, 1.0, 10.0]
+print(f"{'lambda':>8s}  {'w_dist':>8s}  {'w_load':>8s}  {'w_cong':>8s}"
+      f"  {'Train MSE':>10s}  {'CV MSE':>10s}")
+print("-" * 62)
+for lam in lambdas:
+    # Use a smaller learning rate for large lambda to avoid divergence
+    alpha_l = 0.01 if lam >= 10 else 0.1
+    w_l, b_l, losses_l, _, _ = gradient_descent(
+        X_train, y_train, alpha=alpha_l, n_iter=1000, lam=lam
+    )
+    # Report MSE without the penalty term
+    train_mse = losses_l[-1] - lam * np.sum(w_l**2)
+    cv_l, _ = cv_mse(X_train, y_train, alpha=alpha_l, n_iter=1000, lam=lam)
+    print(f"{lam:8.2f}  {w_l[0]:8.3f}  {w_l[1]:8.3f}  {w_l[2]:8.3f}"
+          f"  {train_mse:10.2f}  {cv_l:10.2f}")
+    
+def logistic_gd(X, y, alpha=0.1, n_iter=1000):
+    """Gradient descent for logistic regression."""
+    X_mean, X_std = X.mean(axis=0), X.std(axis=0)
+    X_norm = (X - X_mean) / X_std
+    N, d = X_norm.shape
+    w = np.zeros(d)
+    b = 0.0
+    losses = []
+    accuracies = []
+    for _ in range(n_iter):
+        z = X_norm @ w + b
+        y_hat = 1 / (1 + np.exp(-z))  # sigmoid
+        # Cross-entropy loss (with numerical stability clip)
+        eps = 1e-15
+        y_hat_clip = np.clip(y_hat, eps, 1 - eps)
+        loss = -np.mean(y * np.log(y_hat_clip)
+                        + (1 - y) * np.log(1 - y_hat_clip))
+        losses.append(loss)
+        # Accuracy
+        preds = (y_hat >= 0.5).astype(int)
+        accuracies.append(np.mean(preds == y))
+        # Gradients (cross-entropy gradient from Equation 5.3.15)
+        grad_w = -1 / N * (X_norm.T @ (y - y_hat))
+        grad_b = -1 / N * np.sum(y - y_hat)
+        w -= alpha * grad_w
+        b -= alpha * grad_b
+    return w, b, losses, accuracies
+# Create binary labels: above-median retrieval time = "slow" (1)
+y_class_train = (y_train > np.median(y_train)).astype(int)
+y_class_test = (y_test > np.median(y_train)).astype(int)  # use training median
+w_log, b_log, log_losses, log_accs = logistic_gd(
+    X_train, y_class_train, alpha=0.1, n_iter=1000
+)
+print(f"Final cross-entropy: {log_losses[-1]:.4f}")
+print(f"Training accuracy:   {log_accs[-1]:.3f}")
+# Test accuracy
+X_test_norm = (X_test - X_train.mean(axis=0)) / X_train.std(axis=0)
+y_test_pred = (1 / (1 + np.exp(-(X_test_norm @ w_log + b_log))) >= 0.5).astype(int)
+test_acc = np.mean(y_test_pred == y_class_test)
+print(f"Test accuracy:       {test_acc:.3f}")
+
+# Linear regression: evaluate best model on test set
+y_test_pred_lin = predict(X_test, w, b, X_mean, X_std)
+test_mse = np.mean((y_test - y_test_pred_lin) ** 2)
+print(f"Linear regression test MSE: {test_mse:.2f}")
+print(f"Logistic regression test accuracy: {test_acc:.3f}")
+
+if __name__ == "__main__":
+    w, b, losses, X_mean, X_std = gradient_descent(
+        X_train, y_train, alpha=0.1, n_iter=1000, lam=0
+    )
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(np.arange(1, len(losses) + 1), losses, label='Training MSE')
+    plt.xlabel('Iteration')
+    plt.ylabel('MSE')
+    plt.title('Gradient Descent Linear Regression: Loss vs Iteration')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    
+    alpha_values = [0.001, 0.01, 0.1, 0.5, 1.0]
+    iterations = 500
+
+    plt.figure(figsize=(10, 6))
+    for alpha in alpha_values:
+        _, _, losses, _, _ = gradient_descent(
+            X_train, y_train, alpha=alpha, n_iter=iterations, lam=0
+        )
+        plt.plot(np.arange(1, iterations + 1), losses, label=f"alpha={alpha}")
+
+    plt.xlabel('Iteration')
+    plt.ylabel('MSE')
+    plt.title('Gradient Descent: Loss vs Iteration for Different Learning Rates')
+    plt.legend()
+    plt.yscale('log')
+    plt.grid(True, which='both', ls='--', alpha=0.6)
+    plt.tight_layout()
+    plt.show()
+    
+    # Logistic Regression: Convert continuous y to binary labels
+    y_median = np.median(y)
+    y_binary = (y >= y_median).astype(int)
+    X_train_log, X_test_log, y_train_log, y_test_log = train_test_split(
+        X, y_binary, test_size=0.2, random_state=42
+    )
+
+    w_log, b_log, losses_log, accuracies_log = logistic_gd(
+        X_train_log, y_train_log, alpha=0.1, n_iter=1000)
+
+    plt.figure(figsize=(12, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(np.arange(1, len(losses_log) + 1), losses_log, label='Training Loss', color='blue')
+    plt.xlabel('Iteration')
+    plt.ylabel('Cross-Entropy Loss')
+    plt.title('Logistic Regression: Loss vs Iteration')
+    plt.grid(True)
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(np.arange(1, len(accuracies_log) + 1), accuracies_log, label='Training Accuracy', color='green')
+    plt.xlabel('Iteration')
+    plt.ylabel('Accuracy')
+    plt.title('Logistic Regression: Training Accuracy vs Iteration')
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
